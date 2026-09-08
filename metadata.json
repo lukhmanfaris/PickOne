@@ -1,0 +1,6 @@
+{
+  "name": "Design Review",
+  "description": "Collaborative ranked-choice design voting and concept review application with live standings, ballot ranking, and high-fidelity artwork inspection.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
