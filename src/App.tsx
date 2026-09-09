@@ -10,13 +10,16 @@ import {
   toggleVotingStatus,
   clearAllBallots,
   verifyAdminPasscode,
-  resetToSampleReview
+  resetToSampleReview,
+  addWorkAsset,
+  uploadImage
 } from "./api";
+import { formatImageUrl, uploadToDrive } from "./utils/drive";
+import { getAccessToken } from "./utils/firebase";
 import { calculateTally } from "./utils/tally";
 import { HeaderRail } from "./components/HeaderRail";
 import { AdminBar } from "./components/AdminBar";
 import { DesignHang } from "./components/DesignHang";
-import { JuryPanel } from "./components/JuryPanel";
 import { ArtworkLightbox } from "./components/ArtworkLightbox";
 import { SetupModal } from "./components/SetupModal";
 import { NameGateModal } from "./components/NameGateModal";
@@ -62,7 +65,9 @@ export default function App() {
       setBallots(data.ballots || []);
     } catch (err: any) {
       console.error("Failed to load review state:", err);
-      showToast("err", "Unable to load review state. Check your connection.");
+      if (!quiet) {
+        showToast("err", err.message || "Unable to load review state. Check your connection.");
+      }
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -152,58 +157,38 @@ export default function App() {
   };
 
   const isOpen = cfg?.open !== false;
-  const usedSubmits = myBallot ? myBallot.count : 0;
-  const submitsRemaining = (cfg?.maxSubmits || 2) - usedSubmits;
-  const isLocked = !isOpen || submitsRemaining <= 0;
+  const isLocked = !isOpen;
 
-  const handleToggleVote = (categoryId: string, workId: string) => {
-    if (isLocked) return;
-    setDraftVotes((prev) => {
-      const next = { ...prev };
-      if (next[categoryId] === workId) {
-        delete next[categoryId]; // Toggle off
-      } else {
-        next[categoryId] = workId; // Select new
-      }
-      return next;
-    });
-  };
-
-  const handleClearSlot = (categoryId: string) => {
-    if (isLocked) return;
-    setDraftVotes((prev) => {
-      const next = { ...prev };
-      delete next[categoryId];
-      return next;
-    });
-  };
-
-  const handleSubmitBallot = async () => {
+  const handleToggleVote = async (categoryId: string, workId: string) => {
+    if (isLocked) {
+      showToast("err", "Voting is currently closed.");
+      return;
+    }
     if (!voter) {
       showToast("err", "Please enter your name first.");
       return;
     }
-    if (!cfg) return;
 
-    const categoriesCount = cfg.categories?.length || 0;
-    if (Object.keys(draftVotes).length !== categoriesCount) {
-      showToast(
-        "err",
-        `Please vote for all ${categoriesCount} categories before submitting.`
-      );
-      return;
+    const nextVotes = { ...draftVotes };
+    const isRemoving = nextVotes[categoryId] === workId;
+    if (isRemoving) {
+      delete nextVotes[categoryId];
+    } else {
+      nextVotes[categoryId] = workId;
     }
+    setDraftVotes(nextVotes);
 
-    setIsSubmitting(true);
     try {
-      const res = await submitBallot(voter.id, voter.name, draftVotes);
+      const res = await submitBallot(voter.id, voter.name, nextVotes);
       setCfg(res.cfg);
       setBallots(res.ballots);
-      showToast("ok", "Your ballot has been recorded successfully!");
+      if (isRemoving) {
+        showToast("ok", "Vote removed.");
+      } else {
+        showToast("ok", "Vote recorded!");
+      }
     } catch (err: any) {
-      showToast("err", err.message || "Failed to record ballot.");
-    } finally {
-      setIsSubmitting(false);
+      showToast("err", err.message || "Failed to record vote.");
     }
   };
 
@@ -281,7 +266,7 @@ export default function App() {
   const handleSaveConfig = async (newConfig: Partial<ReviewConfig> & { currentPin?: string }) => {
     const res = await saveReviewConfig({
       ...newConfig,
-      currentPin: newConfig.currentPin || adminPin
+      currentPin: adminPin || cfg?.pin || newConfig.currentPin || newConfig.pin
     });
     setCfg(res.cfg);
     setBallots(res.ballots);
@@ -290,6 +275,39 @@ export default function App() {
     }
     setIsAdmin(true);
     showToast("ok", "Review configuration saved.");
+  };
+
+  const handleAddAssetToWork = async (workId: string, file: File) => {
+    if (!isAdmin) {
+      showToast("err", "Admin access required to configure assets.");
+      return;
+    }
+
+    try {
+      let url = "";
+      try {
+        const token = await getAccessToken();
+        if (token) {
+          url = await uploadToDrive(file, token);
+        }
+      } catch (driveErr) {
+        console.warn("Drive upload failed, falling back to local server upload", driveErr);
+      }
+
+      if (!url) {
+        const res = await uploadImage(file);
+        url = res.url;
+      }
+
+      const formattedUrl = formatImageUrl(url);
+      const res = await addWorkAsset(workId, formattedUrl, adminPin || cfg?.pin);
+      setCfg(res.cfg);
+      setBallots(res.ballots);
+      showToast("ok", "Asset added successfully!");
+    } catch (err: any) {
+      console.error("Failed to add asset:", err);
+      showToast("err", err.message || "Failed to upload asset.");
+    }
   };
 
   const handleCopyResults = () => {
@@ -371,13 +389,16 @@ export default function App() {
         voter={voter}
         ballotCount={ballots.length}
         isAdmin={isAdmin}
+        tallies={tallies}
         onOpenAdminPrompt={() => setIsAdminPromptOpen(true)}
         onSwitchVoter={handleSwitchVoter}
         onRefresh={() => loadState(false)}
         isRefreshing={isRefreshing}
+        onCopyResults={handleCopyResults}
+        copiedResults={copiedResults}
       />
 
-      <main className="max-w-[1240px] mx-auto px-4 sm:px-6">
+      <main className="max-w-[1240px] mx-auto px-4 sm:px-6 pb-20">
         {isAdmin && (
           <AdminBar
             cfg={cfg}
@@ -390,38 +411,23 @@ export default function App() {
           />
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_380px] gap-8 items-start">
-          <section aria-label="Design Routes">
-            <DesignHang
-              categories={cfg.categories}
-              works={cfg.works}
-              draftVotes={draftVotes}
-              tallies={tallies}
-              isOpen={isOpen}
-              isLocked={isLocked}
-              totalBallots={ballots.length}
-              onToggleVote={handleToggleVote}
-              onOpenZoom={(index) => setLightboxIndex(index)}
-            />
-          </section>
-
-          <section className="lg:sticky lg:top-28">
-            <JuryPanel
-              cfg={cfg}
-              draftVotes={draftVotes}
-              tallies={tallies}
-              myBallot={myBallot}
-              totalBallots={ballots.length}
-              isOpen={isOpen}
-              isLocked={isLocked}
-              isSubmitting={isSubmitting}
-              onClearSlot={handleClearSlot}
-              onSubmitBallot={handleSubmitBallot}
-              onCopyResults={handleCopyResults}
-              copiedResults={copiedResults}
-            />
-          </section>
-        </div>
+        {/* Centered Main Gallery: 3 Concept Cards Per Row */}
+        <section aria-label="Design Routes" className="w-full">
+          <DesignHang
+            categories={cfg.categories}
+            works={cfg.works}
+            draftVotes={draftVotes}
+            tallies={tallies}
+            isOpen={isOpen}
+            isLocked={isLocked}
+            totalBallots={ballots.length}
+            isAdmin={isAdmin}
+            onToggleVote={handleToggleVote}
+            onOpenZoom={(index) => setLightboxIndex(index)}
+            onAddAssetToWork={handleAddAssetToWork}
+            onAddOptionToCategory={() => setIsSetupOpen(true)}
+          />
+        </section>
       </main>
 
       <NameGateModal
@@ -441,6 +447,7 @@ export default function App() {
         isOpen={isSetupOpen}
         onClose={() => setIsSetupOpen(false)}
         onSave={handleSaveConfig}
+        adminPin={adminPin}
       />
 
       {lightboxIndex !== null && (

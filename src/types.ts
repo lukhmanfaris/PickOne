@@ -8,7 +8,8 @@ export interface Work {
   categoryId: string;
   name: string;
   note?: string;
-  img?: string;
+  img?: string;        // Primary asset URL
+  images?: string[];   // All uploaded asset URLs for this concept
   presetStyle?: number;
 }
 

@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import multer from "multer";
 import { createServer as createViteServer } from "vite";
 
 interface Category {
@@ -14,6 +15,7 @@ interface Work {
   name: string;
   note?: string;
   img?: string;
+  images?: string[];
   presetStyle?: number;
 }
 
@@ -46,6 +48,24 @@ interface StoreData {
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const DATA_FILE = path.join(DATA_DIR, "review_store.json");
+const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
+
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: UPLOAD_DIR,
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    const ext = path.extname(file.originalname);
+    cb(null, file.fieldname + "-" + uniqueSuffix + ext);
+  }
+});
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+});
 
 const defaultReview: ReviewConfig = {
   id: "default-review",
@@ -170,15 +190,80 @@ function broadcastUpdate() {
   });
 }
 
+function formatDriveUrl(url?: string): string {
+  if (!url) return "";
+  const trimmed = url.trim();
+  const driveMatch = trimmed.match(
+    /(?:drive\.google\.com\/(?:file\/d\/|open\?id=|uc\?id=|thumbnail\?id=)|lh3\.googleusercontent\.com\/d\/)([a-zA-Z0-9_-]{20,})/
+  );
+  if (driveMatch && driveMatch[1]) {
+    return `https://lh3.googleusercontent.com/d/${driveMatch[1]}=w1600`;
+  }
+  return trimmed;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(express.json({ limit: "30mb" }));
   app.use(express.urlencoded({ extended: true, limit: "30mb" }));
+  app.use("/uploads", express.static(UPLOAD_DIR));
 
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", timestamp: Date.now() });
+  });
+
+  app.post("/api/upload", (req, res) => {
+    upload.single("image")(req, res, (err: any) => {
+      if (err) {
+        if (err instanceof multer.MulterError) {
+          if (err.code === "LIMIT_FILE_SIZE") {
+            return res.status(413).json({
+              error: "File is too large (maximum size is 50MB). Please select a smaller file."
+            });
+          }
+          return res.status(400).json({ error: `Upload error: ${err.message}` });
+        }
+        return res.status(500).json({ error: err.message || "File upload failed." });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ error: "No file provided for upload." });
+      }
+
+      res.json({ url: `/uploads/${req.file.filename}` });
+    });
+  });
+
+  app.get("/api/image-proxy", async (req, res) => {
+    try {
+      const targetUrl = req.query.url as string;
+      if (!targetUrl) {
+        return res.status(400).send("Missing url query parameter");
+      }
+
+      const resolved = formatDriveUrl(targetUrl);
+      const response = await fetch(resolved, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+      });
+
+      if (!response.ok) {
+        return res.status(response.status).send("Failed to load upstream image");
+      }
+
+      const contentType = response.headers.get("content-type") || "image/jpeg";
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "public, max-age=86400");
+
+      const buffer = await response.arrayBuffer();
+      res.send(Buffer.from(buffer));
+    } catch (err) {
+      console.error("Image proxy error:", err);
+      res.status(500).send("Error proxying image");
+    }
   });
 
   app.get("/api/review", (_req, res) => {
@@ -212,7 +297,12 @@ async function startServer() {
     try {
       const { title, brief, categories, works, maxSubmits, pin, currentPin } = req.body;
 
-      if (memoryStore.cfg && memoryStore.cfg.pin && currentPin !== memoryStore.cfg.pin) {
+      if (
+        memoryStore.cfg &&
+        memoryStore.cfg.pin &&
+        currentPin !== memoryStore.cfg.pin &&
+        pin !== memoryStore.cfg.pin
+      ) {
         return res.status(401).json({ error: "Invalid admin passcode." });
       }
 
@@ -243,14 +333,26 @@ async function startServer() {
 
       const cleanWorks: Work[] = works
         .filter((w: any) => w && w.name && w.name.trim() && w.categoryId && validCatIds.has(w.categoryId))
-        .map((w: any, index: number) => ({
-          id: w.id || `route-${index}-${Date.now()}`,
-          categoryId: w.categoryId,
-          name: w.name.trim(),
-          note: (w.note || "").trim(),
-          img: w.img || "",
-          presetStyle: typeof w.presetStyle === "number" ? w.presetStyle : index % 5
-        }));
+        .map((w: any, index: number) => {
+          const rawImages: string[] = Array.isArray(w.images)
+            ? w.images
+            : (w.img ? [w.img] : []);
+          const cleanImages = rawImages
+            .filter((im: any) => im && typeof im === "string" && im.trim())
+            .map((im: string) => formatDriveUrl(im.trim()));
+
+          const primaryImg = cleanImages[0] || (w.img ? formatDriveUrl(w.img) : "");
+
+          return {
+            id: w.id || `route-${index}-${Date.now()}`,
+            categoryId: w.categoryId,
+            name: w.name.trim(),
+            note: (w.note || "").trim(),
+            img: primaryImg,
+            images: cleanImages,
+            presetStyle: typeof w.presetStyle === "number" ? w.presetStyle : index % 5
+          };
+        });
 
       if (cleanWorks.length < 2) {
         return res.status(400).json({ error: "At least two named routes belonging to valid categories are required." });
@@ -310,35 +412,41 @@ async function startServer() {
         return res.status(400).json({ error: "Invalid votes format." });
       }
 
-      const reqCats = memoryStore.cfg.categories.length;
-      if (Object.keys(votes).length !== reqCats) {
-         return res.status(400).json({ error: `Please vote for all ${reqCats} categories.` });
+      const validCatIds = new Set((memoryStore.cfg.categories || []).map((c) => c.id));
+      const validWorkIds = new Set((memoryStore.cfg.works || []).map((w) => w.id));
+
+      const cleanVotes: Record<string, string> = {};
+      for (const [catId, workId] of Object.entries(votes)) {
+        if (validCatIds.has(catId) && typeof workId === "string" && validWorkIds.has(workId)) {
+          cleanVotes[catId] = workId;
+        }
       }
 
       const existingIndex = memoryStore.ballots.findIndex((b) => b.voterId === voterId);
       const prevCount = existingIndex >= 0 ? memoryStore.ballots[existingIndex].count : 0;
 
-      if (prevCount >= memoryStore.cfg.maxSubmits) {
-        return res.status(400).json({
-          error: `You have reached your submission limit of ${memoryStore.cfg.maxSubmits} times.`
-        });
-      }
+      const votesSignature = Object.entries(cleanVotes)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => `${k}=${v}`)
+        .join("|");
+      const ballotKey = `b:${voterId}:${Date.now()}:${votesSignature}:${encodeURIComponent(name.trim())}`;
 
-      const votesSignature = Object.entries(votes).sort(([a],[b]) => a.localeCompare(b)).map(([k,v]) => `${k}=${v}`).join('|');
-      const ballotKey = `b:${voterId}:${prevCount + 1}:${votesSignature}:${encodeURIComponent(name.trim())}`;
-      
       const newBallot: Ballot = {
         key: ballotKey,
         voterId,
         name: name.trim(),
-        count: prevCount + 1,
-        votes,
+        count: Math.max(1, prevCount),
+        votes: cleanVotes,
         timestamp: Date.now()
       };
 
       if (existingIndex >= 0) {
-        memoryStore.ballots[existingIndex] = newBallot;
-      } else {
+        if (Object.keys(cleanVotes).length === 0) {
+          memoryStore.ballots.splice(existingIndex, 1);
+        } else {
+          memoryStore.ballots[existingIndex] = newBallot;
+        }
+      } else if (Object.keys(cleanVotes).length > 0) {
         memoryStore.ballots.push(newBallot);
       }
 
@@ -354,6 +462,52 @@ async function startServer() {
     } catch (err: any) {
       console.error("Error in /api/review/ballot:", err);
       res.status(500).json({ error: "Failed to record ballot." });
+    }
+  });
+
+  app.post("/api/review/work/asset", (req, res) => {
+    try {
+      const { workId, assetUrl, pin } = req.body;
+      if (!workId || !assetUrl || !assetUrl.trim()) {
+        return res.status(400).json({ error: "workId and assetUrl are required." });
+      }
+
+      if (!memoryStore.cfg) {
+        return res.status(404).json({ error: "Review configuration not found." });
+      }
+
+      if (memoryStore.cfg.pin && pin !== memoryStore.cfg.pin) {
+        return res.status(401).json({ error: "Unauthorized: Admin passcode required to configure assets." });
+      }
+
+      const workIndex = memoryStore.cfg.works.findIndex((w) => w.id === workId);
+      if (workIndex < 0) {
+        return res.status(404).json({ error: "Work route not found." });
+      }
+
+      const formattedUrl = formatDriveUrl(assetUrl.trim());
+      const targetWork = memoryStore.cfg.works[workIndex];
+      const existingImages = Array.isArray(targetWork.images) ? [...targetWork.images] : (targetWork.img ? [targetWork.img] : []);
+
+      if (!existingImages.includes(formattedUrl)) {
+        existingImages.push(formattedUrl);
+      }
+
+      targetWork.images = existingImages;
+      targetWork.img = existingImages[0];
+      memoryStore.cfg.updatedAt = Date.now();
+
+      saveStore();
+      broadcastUpdate();
+
+      res.json({
+        success: true,
+        cfg: memoryStore.cfg,
+        ballots: memoryStore.ballots
+      });
+    } catch (err: any) {
+      console.error("Error in /api/review/work/asset:", err);
+      res.status(500).json({ error: "Failed to add asset to work." });
     }
   });
 
@@ -418,6 +572,23 @@ async function startServer() {
     saveStore();
     broadcastUpdate();
     res.json({ success: true, cfg: memoryStore.cfg, ballots: memoryStore.ballots });
+  });
+
+  // Ensure any unmatched /api route returns JSON 404, NEVER Vite's index.html
+  app.all("/api/*", (req, res) => {
+    res.status(404).json({ error: `API endpoint not found: ${req.method} ${req.path}` });
+  });
+
+  // Global error handler for API errors - guarantees JSON responses for all /api requests
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.path.startsWith("/api/")) {
+      console.error("API Error caught:", err);
+      const statusCode = err.status || err.statusCode || 500;
+      return res.status(statusCode).json({
+        error: err.message || "Internal server error"
+      });
+    }
+    next(err);
   });
 
   if (process.env.NODE_ENV !== "production") {

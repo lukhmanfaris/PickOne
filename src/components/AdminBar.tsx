@@ -78,10 +78,10 @@ export const AdminBar: React.FC<AdminBarProps> = ({
         <div className="flex items-center gap-3 ml-auto text-xs text-neutral-600 dark:text-neutral-400">
           <span className="hidden sm:inline">
             Each voter:{" "}
-            <strong className="text-neutral-900 dark:text-white">
-              {cfg.maxSubmits === 1 ? "once" : `${cfg.maxSubmits} submissions`}
+            <strong className="text-neutral-900 dark:text-white font-semibold">
+              {cfg.maxSubmits === 1 ? "1 vote" : `${cfg.maxSubmits} submissions`}
             </strong>{" "}
-            · Top <strong className="text-neutral-900 dark:text-white">{cfg.slots}</strong> ranked
+            · <strong className="text-neutral-900 dark:text-white font-semibold">{cfg.categories?.length || 1}</strong> {cfg.categories?.length === 1 ? "category" : "categories"}
           </span>
           <button
             onClick={onExitAdmin}

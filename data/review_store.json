@@ -1,0 +1,63 @@
+{
+  "cfg": {
+    "id": "default-review",
+    "title": "MYDATA Sports Club — Jersey Concept Review",
+    "brief": "Pick the best for you!",
+    "categories": [
+      {
+        "id": "cat-logo",
+        "name": "Home"
+      },
+      {
+        "id": "cat-1788854741932",
+        "name": "Away"
+      }
+    ],
+    "works": [
+      {
+        "id": "w-swiss",
+        "categoryId": "cat-logo",
+        "name": "Kinetic Swiss",
+        "note": "",
+        "img": "https://lh3.googleusercontent.com/d/1cYnWfcC7EfRvbwYJxVdnwcB6qCVp5iGk=w1600",
+        "images": [
+          "https://lh3.googleusercontent.com/d/1cYnWfcC7EfRvbwYJxVdnwcB6qCVp5iGk=w1600"
+        ],
+        "presetStyle": 0
+      },
+      {
+        "id": "w-brutalist",
+        "categoryId": "cat-logo",
+        "name": "Neo-Monolith",
+        "note": "",
+        "img": "",
+        "images": [],
+        "presetStyle": 1
+      },
+      {
+        "id": "w-organic",
+        "categoryId": "cat-logo",
+        "name": "Soft Organic",
+        "note": "",
+        "img": "",
+        "images": [],
+        "presetStyle": 2
+      },
+      {
+        "id": "w-1788854746149-5",
+        "categoryId": "cat-1788854741932",
+        "name": "White Dove",
+        "note": "",
+        "img": "",
+        "images": [],
+        "presetStyle": 0
+      }
+    ],
+    "maxSubmits": 2,
+    "pin": "1234",
+    "open": true,
+    "createdAt": 1788853115215,
+    "updatedAt": 1788856096886
+  },
+  "ballots": []
+}
