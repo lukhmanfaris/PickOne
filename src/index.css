@@ -1,6 +1,32 @@
 @import "tailwindcss";
 
+/* ---------------------------------------------------------------
+   Force light mode.
+
+   Two separate mechanisms made this app follow the viewer's device
+   theme, so testers on dark-mode phones saw a dark app while the
+   designer on a light-mode Mac never noticed.
+
+   1. This line retargets Tailwind's `dark:` variant from the device
+      preference to a `.dark` CSS class. Nothing in the app ever adds
+      that class, so every `dark:` utility is now inert. The classes
+      stay in the markup — harmless, and there if dark mode is ever
+      wanted later. Adding `class="dark"` to <html> would switch the
+      whole app back on.
+
+   2. The two `prefers-color-scheme: dark` blocks below have been
+      rewritten to target `.dark` too, for the same reason.
+
+   3. `color-scheme: light` on :root keeps native UI — scrollbars,
+      text-input carets, autofill backgrounds — light as well. Without
+      it those stay dark on a dark-mode device and look broken against
+      a light page.
+   --------------------------------------------------------------- */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
+  color-scheme: light;
+
   /* Core System Colors */
   --system-blue: #007AFF;
   --system-blue-hover: #005bb5;
@@ -31,8 +57,8 @@
   --font-stack: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
+.dark {
+  &, :root {
     /* Adaptive Glass System: Dark Mode */
     --canvas-bg: linear-gradient(135deg, #18191b 0%, #0d0e10 100%);
     --glass-surface: rgba(36, 38, 42, 0.72);
@@ -103,7 +129,7 @@ body {
     inset 0 1px 1px 0 rgba(255, 255, 255, 0.95);
 }
 
-@media (prefers-color-scheme: dark) {
+.dark {
   .floating-glass-header {
     background: rgba(26, 28, 32, 0.78);
     border: 1px solid rgba(255, 255, 255, 0.12);
