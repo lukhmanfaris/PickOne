@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Work, Category } from "../types";
 import { VectorArtwork } from "./VectorArtwork";
 import { ChevronLeft, ChevronRight, X, Check, Trash2 } from "lucide-react";
-import { getWorkImages } from "../utils/drive";
+import { getWorkImages } from "../utils/images";
 
 interface ArtworkLightboxProps {
   works: Work[];

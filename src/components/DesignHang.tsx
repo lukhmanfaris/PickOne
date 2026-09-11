@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Work, Category, TallyRow } from "../types";
 import { VectorArtwork } from "./VectorArtwork";
 import { Maximize2, Award, Plus, ChevronLeft, ChevronRight, UploadCloud, Loader2, ImagePlus } from "lucide-react";
-import { getWorkImages } from "../utils/drive";
+import { getWorkImages } from "../utils/images";
 
 interface DesignHangProps {
   categories: Category[];

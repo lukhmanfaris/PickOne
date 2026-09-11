@@ -44,18 +44,29 @@ export function calculateTally(cfg: ReviewConfig, ballots: Ballot[]): TallyRow[]
     return a.work.name.localeCompare(b.work.name);
   });
 
-  // Assign ranks within categories
-  let currentCat = "";
-  let currentRank = 1;
-  rows.forEach((row, i) => {
+  // Assign ranks WITHIN each category.
+  //
+  // The previous version used the global row index (`i + 1`), so only the
+  // first category ranked correctly — every category after it continued the
+  // running count and showed 4, 5, 6 instead of 1, 2, 3. Grouping first and
+  // numbering within each group fixes that. Equal points share a rank, and
+  // the next distinct score skips ahead (1, 1, 3) the way standings normally
+  // work.
+  const byCategory = new Map<string, TallyRow[]>();
+  rows.forEach((row) => {
     const cat = row.work.categoryId || "";
-    if (cat !== currentCat) {
-      currentCat = cat;
-      currentRank = 1;
-    } else if (i > 0 && row.pts < rows[i - 1].pts) {
-      currentRank = i + 1;
-    }
-    row.rank = currentRank;
+    if (!byCategory.has(cat)) byCategory.set(cat, []);
+    byCategory.get(cat)!.push(row);
+  });
+
+  byCategory.forEach((catRows) => {
+    catRows.forEach((row, i) => {
+      if (i > 0 && row.pts === catRows[i - 1].pts) {
+        row.rank = catRows[i - 1].rank; // tie shares the rank
+      } else {
+        row.rank = i + 1;
+      }
+    });
   });
 
   return rows;

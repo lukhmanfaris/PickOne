@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { ReviewConfig, Ballot, Voter } from "./types";
+import { ReviewConfig, Ballot, Voter, SaveConfigPayload } from "./types";
 import {
   fetchReviewState,
   getLocalVoter,
@@ -14,9 +14,10 @@ import {
   addWorkAsset,
   uploadImage
 } from "./api";
-import { formatImageUrl, uploadToDrive } from "./utils/drive";
-import { getAccessToken } from "./utils/firebase";
+import { formatImageUrl } from "./utils/images";
+import { supabase } from "./utils/supabase";
 import { calculateTally } from "./utils/tally";
+import { isLegacyVoterId } from "./utils/voterId";
 import { HeaderRail } from "./components/HeaderRail";
 import { AdminBar } from "./components/AdminBar";
 import { DesignHang } from "./components/DesignHang";
@@ -24,13 +25,14 @@ import { ArtworkLightbox } from "./components/ArtworkLightbox";
 import { SetupModal } from "./components/SetupModal";
 import { NameGateModal } from "./components/NameGateModal";
 import { AdminPromptModal } from "./components/AdminPromptModal";
-import { AlertCircle, CheckCircle2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Eye } from "lucide-react";
 
 export default function App() {
   const [cfg, setCfg] = useState<ReviewConfig | null>(null);
   const [ballots, setBallots] = useState<Ballot[]>([]);
   const [voter, setVoter] = useState<Voter | null>(null);
   const [draftVotes, setDraftVotes] = useState<Record<string, string>>({});
+  /** True when this person entered a name that had already voted. */
   const [draftInitialized, setDraftInitialized] = useState(false);
 
   // Admin state
@@ -77,49 +79,44 @@ export default function App() {
   useEffect(() => {
     const localUser = getLocalVoter();
     if (localUser) {
-      setVoter(localUser);
+      // Identities used to be random UUIDs. Anyone still carrying one in
+      // localStorage would keep voting as an anonymous device rather than as
+      // their assigned ID, so send them back to the gate once.
+      if (isLegacyVoterId(localUser.id)) {
+        clearLocalVoter();
+      } else {
+        setVoter(localUser);
+      }
     }
 
     loadState();
 
-    let eventSource: EventSource | null = null;
-    try {
-      eventSource = new EventSource("/api/review/stream");
-      eventSource.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload.cfg) setCfg(payload.cfg);
-          if (payload.ballots) setBallots(payload.ballots);
-        } catch (e) {
-          console.error("Failed to parse SSE payload", e);
-        }
-      };
-      eventSource.onerror = () => {
-        eventSource?.close();
-      };
-    } catch (e) {
-      console.warn("SSE not available, falling back to interval refresh", e);
-    }
+    // Live updates over Supabase Realtime, replacing the old SSE stream.
+    //
+    // The previous version listed `lightboxIndex` in this effect's dependency
+    // array, which tore down and rebuilt the entire connection every time
+    // someone opened or closed an image. This effect now depends only on
+    // `loadState`, so the subscription is created once and survives.
+    const channel = supabase
+      .channel("review-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "ballots" }, () => loadState(true))
+      .on("postgres_changes", { event: "*", schema: "public", table: "votes" }, () => loadState(true))
+      .on("postgres_changes", { event: "*", schema: "public", table: "reviews" }, () => loadState(true))
+      .subscribe();
 
-    const interval = setInterval(() => {
-      if (!document.hidden && lightboxIndex === null) {
-        loadState(true);
-      }
-    }, 8000);
-
+    // Cheap safety net in case the socket drops while the tab is hidden.
     const onVisibilityChange = () => {
-      if (!document.hidden && lightboxIndex === null) {
+      if (!document.hidden) {
         loadState(true);
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
-      clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      eventSource?.close();
+      supabase.removeChannel(channel);
     };
-  }, [loadState, lightboxIndex]);
+  }, [loadState]);
 
   const myBallot = useMemo(() => {
     if (!voter || !ballots) return null;
@@ -127,6 +124,8 @@ export default function App() {
   }, [voter, ballots]);
 
   useEffect(() => {
+    // Load whatever this voter ID previously submitted, so returning voters
+    // see their own picks rather than a blank ballot.
     if (myBallot && !draftInitialized) {
       setDraftVotes(myBallot.votes || {});
       setDraftInitialized(true);
@@ -138,15 +137,54 @@ export default function App() {
     return calculateTally(cfg, ballots);
   }, [cfg, ballots]);
 
-  const handleEnterVoter = (name: string) => {
+  /** True when the draft differs from what this voter last submitted. */
+  const hasUnsubmittedChanges = useMemo(() => {
+    const submitted = myBallot?.votes || {};
+    const draftKeys = Object.keys(draftVotes);
+    const submittedKeys = Object.keys(submitted);
+    if (draftKeys.length !== submittedKeys.length) return true;
+    return draftKeys.some((k) => draftVotes[k] !== submitted[k]);
+  }, [draftVotes, myBallot]);
+
+  /** How many more times this voter may submit, per the review's max_submits. */
+  const submitsLeft = useMemo(() => {
+    if (!cfg) return 0;
+    const used = myBallot?.count ?? 0;
+    return Math.max(0, cfg.maxSubmits - used);
+  }, [cfg, myBallot]);
+
+  const hasSubmittedBefore = (myBallot?.count ?? 0) > 0;
+
+  const handleEnterVoter = (voterId: string) => {
+    // Identity is the voter's assigned ID, not a per-device random value.
+    //
+    // Previously this generated a fresh UUID on every entry, so the same
+    // person coming back — after a refresh, in a private window, on a phone —
+    // became a brand new voter with an untouched allowance. The name-based
+    // spectator check tried to paper over that, but it guessed from a display
+    // name and could not distinguish two people who share one.
+    //
+    // Keying on the assigned ID means one ballot per person across every
+    // device, and the submission limit applies to a human rather than to a
+    // browser profile. Whether they may still vote is then just a matter of
+    // how many submissions that ID has left — no separate spectator flag.
     const newVoter: Voter = {
-      id: Math.random().toString(36).slice(2, 8),
-      name
+      id: voterId,
+      name: voterId
     };
     setLocalVoter(newVoter);
     setVoter(newVoter);
+
+    // Reload the draft from whatever this ID previously submitted.
+    setDraftVotes({});
     setDraftInitialized(false);
-    showToast("ok", `Welcome, ${name}! Click any route to cast your vote.`);
+
+    const existing = ballots.find((b) => b.voterId === voterId);
+    if (existing) {
+      showToast("ok", `Welcome back, ${voterId}. Your previous picks are loaded.`);
+    } else {
+      showToast("ok", `Signed in as ${voterId}. Pick your favourite in each category, then submit.`);
+    }
   };
 
   const handleSwitchVoter = () => {
@@ -159,7 +197,7 @@ export default function App() {
   const isOpen = cfg?.open !== false;
   const isLocked = !isOpen;
 
-  const handleToggleVote = async (categoryId: string, workId: string) => {
+  const handleToggleVote = (categoryId: string, workId: string) => {
     if (isLocked) {
       showToast("err", "Voting is currently closed.");
       return;
@@ -169,26 +207,41 @@ export default function App() {
       return;
     }
 
-    const nextVotes = { ...draftVotes };
-    const isRemoving = nextVotes[categoryId] === workId;
-    if (isRemoving) {
-      delete nextVotes[categoryId];
-    } else {
-      nextVotes[categoryId] = workId;
-    }
-    setDraftVotes(nextVotes);
+    // Fix #3, part 1: selecting a card now only updates local draft state.
+    // It used to fire submitBallot() on every single click, which is why a
+    // submission limit of 2 would lock a voter out after two clicks. Nothing
+    // reaches the database until the voter presses Submit.
+    setDraftVotes((prev) => {
+      const next = { ...prev };
+      if (next[categoryId] === workId) {
+        delete next[categoryId];
+      } else {
+        next[categoryId] = workId;
+      }
+      return next;
+    });
+  };
 
+  const handleSubmitBallot = async () => {
+    if (!voter || isLocked || isSubmitting) return;
+
+    if (Object.keys(draftVotes).length === 0) {
+      showToast("err", "Pick at least one concept before submitting.");
+      return;
+    }
+
+    setIsSubmitting(true);
     try {
-      const res = await submitBallot(voter.id, voter.name, nextVotes);
+      const res = await submitBallot(voter.id, voter.name, draftVotes);
       setCfg(res.cfg);
       setBallots(res.ballots);
-      if (isRemoving) {
-        showToast("ok", "Vote removed.");
-      } else {
-        showToast("ok", "Vote recorded!");
-      }
+      showToast("ok", "Ballot submitted. Thanks!");
     } catch (err: any) {
-      showToast("err", err.message || "Failed to record vote.");
+      // The database enforces the submission limit, so this is where a voter
+      // finds out they have run out of revisions.
+      showToast("err", err.message || "Failed to submit your ballot.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -263,10 +316,13 @@ export default function App() {
     }
   };
 
-  const handleSaveConfig = async (newConfig: Partial<ReviewConfig> & { currentPin?: string }) => {
+  const handleSaveConfig = async (newConfig: SaveConfigPayload) => {
+    // The PIN is never returned by the server any more, so it can only come
+    // from admin state (set after verifyAdminPasscode) or from the setup form
+    // during first-time setup.
     const res = await saveReviewConfig({
       ...newConfig,
-      currentPin: adminPin || cfg?.pin || newConfig.currentPin || newConfig.pin
+      currentPin: adminPin || newConfig.currentPin || newConfig.pin
     });
     setCfg(res.cfg);
     setBallots(res.ballots);
@@ -284,23 +340,12 @@ export default function App() {
     }
 
     try {
-      let url = "";
-      try {
-        const token = await getAccessToken();
-        if (token) {
-          url = await uploadToDrive(file, token);
-        }
-      } catch (driveErr) {
-        console.warn("Drive upload failed, falling back to local server upload", driveErr);
-      }
-
-      if (!url) {
-        const res = await uploadImage(file);
-        url = res.url;
-      }
+      // Single upload path now: compress, then straight to Supabase Storage.
+      // The old Google Drive branch (with its OAuth token dance) is gone.
+      const { url } = await uploadImage(file);
 
       const formattedUrl = formatImageUrl(url);
-      const res = await addWorkAsset(workId, formattedUrl, adminPin || cfg?.pin);
+      const res = await addWorkAsset(workId, formattedUrl, adminPin);
       setCfg(res.cfg);
       setBallots(res.ballots);
       showToast("ok", "Asset added successfully!");
@@ -411,6 +456,38 @@ export default function App() {
           />
         )}
 
+        {voter && hasSubmittedBefore && (
+          <div className={`mb-4 p-3.5 rounded-2xl border flex items-start gap-3 ${
+            submitsLeft > 0
+              ? "bg-emerald-500/10 border-emerald-500/30"
+              : "bg-amber-500/10 border-amber-500/30"
+          }`}>
+            <Eye className={`w-4.5 h-4.5 shrink-0 mt-0.5 ${
+              submitsLeft > 0
+                ? "text-emerald-600 dark:text-emerald-400"
+                : "text-amber-600 dark:text-amber-400"
+            }`} />
+            <div className="min-w-0">
+              <p className={`text-sm font-semibold ${
+                submitsLeft > 0
+                  ? "text-emerald-800 dark:text-emerald-300"
+                  : "text-amber-800 dark:text-amber-300"
+              }`}>
+                You've already voted
+              </p>
+              <p className={`text-xs mt-0.5 leading-relaxed ${
+                submitsLeft > 0
+                  ? "text-emerald-700/90 dark:text-emerald-400/90"
+                  : "text-amber-700/90 dark:text-amber-400/90"
+              }`}>
+                {submitsLeft > 0
+                  ? `Your picks are loaded below. You can change them and submit ${submitsLeft} more ${submitsLeft === 1 ? "time" : "times"}.`
+                  : `Your ballot is final — highlighted below. Voting again isn't possible for ID ${voter.name}.`}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Centered Main Gallery: 3 Concept Cards Per Row */}
         <section aria-label="Design Routes" className="w-full">
           <DesignHang
@@ -430,9 +507,49 @@ export default function App() {
         </section>
       </main>
 
+      {/* Fix #3, part 2: the explicit submit step.
+          Clicking cards builds a draft; this is the only thing that writes a
+          ballot to the database. It appears once the voter has picks that
+          differ from what they last submitted. */}
+      {voter && !isLocked && (hasUnsubmittedChanges || isSubmitting) && (
+        <div className="fixed bottom-0 inset-x-0 z-40 px-4 pb-4 pointer-events-none">
+          <div className="max-w-[1240px] mx-auto pointer-events-auto">
+            <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-4 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-xl border border-neutral-200 dark:border-neutral-800 rounded-2xl shadow-2xl px-4 sm:px-5 py-3">
+              <div className="flex-1 min-w-0 text-center sm:text-left">
+                <p className="text-sm font-semibold text-neutral-900 dark:text-white">
+                  {Object.keys(draftVotes).length} of {cfg.categories.length}{" "}
+                  {cfg.categories.length === 1 ? "category" : "categories"} picked
+                </p>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
+                  {submitsLeft <= 0
+                    ? "You've used all your submissions."
+                    : hasSubmittedBefore
+                      ? `You can revise ${submitsLeft} more ${submitsLeft === 1 ? "time" : "times"}.`
+                      : `Nothing is recorded until you submit.`}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSubmitBallot}
+                disabled={isSubmitting || submitsLeft <= 0 || Object.keys(draftVotes).length === 0}
+                className="w-full sm:w-auto shrink-0 px-6 py-2.5 rounded-full text-sm font-semibold bg-[#007AFF] text-white hover:bg-[#005bb5] transition shadow-md shadow-blue-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {isSubmitting
+                  ? "Submitting…"
+                  : hasSubmittedBefore
+                    ? "Update ballot"
+                    : "Submit ballot"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <NameGateModal
         cfg={cfg}
         isOpen={!voter}
+        takenIds={ballots.map((b) => b.voterId)}
         onEnter={handleEnterVoter}
       />
 

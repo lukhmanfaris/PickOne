@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Work } from "../types";
-import { formatImageUrl, getWorkImages } from "../utils/drive";
+import { formatImageUrl, getWorkImages } from "../utils/images";
 import { ImagePlus, AlertCircle } from "lucide-react";
 
 interface VectorArtworkProps {

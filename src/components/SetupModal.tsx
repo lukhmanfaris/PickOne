@@ -1,17 +1,15 @@
 import React, { useState, useRef, useEffect } from "react";
-import { ReviewConfig, Work, Category } from "../types";
+import { ReviewConfig, Work, Category, SaveConfigPayload } from "../types";
 import { X, Plus, Trash2, Shield, Sliders, Image, Folder, UploadCloud, Loader2, RefreshCw } from "lucide-react";
-import { uploadToDrive, formatImageUrl, getWorkImages } from "../utils/drive";
-import { initAuth, googleSignIn, getAccessToken, logout } from "../utils/firebase";
+import { formatImageUrl, getWorkImages } from "../utils/images";
 import { uploadImage } from "../api";
-import type { User } from "firebase/auth";
 
 interface SetupModalProps {
   currentConfig: ReviewConfig;
   isOpen: boolean;
   isInitialSetup?: boolean;
   onClose: () => void;
-  onSave: (newConfig: Partial<ReviewConfig> & { currentPin?: string }) => Promise<void>;
+  onSave: (newConfig: SaveConfigPayload) => Promise<void>;
   adminPin?: string;
 }
 
@@ -25,47 +23,10 @@ export const SetupModal: React.FC<SetupModalProps> = ({
 }) => {
   const [uploadingIdx, setUploadingIdx] = useState<number | null>(null);
   
-  const [needsAuth, setNeedsAuth] = useState(true);
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-
-  useEffect(() => {
-    try {
-      const unsubscribe = initAuth(
-        (currentUser) => {
-          setUser(currentUser);
-          setNeedsAuth(false);
-        },
-        () => {
-          setUser(null);
-          setNeedsAuth(true);
-        }
-      );
-      return () => {
-        if (typeof unsubscribe === "function") {
-          unsubscribe();
-        }
-      };
-    } catch (e) {
-      console.warn("Firebase Auth not configured or initialized", e);
-    }
-  }, []);
-
-  const handleLogin = async () => {
-    setIsLoggingIn(true);
-    try {
-      const res = await googleSignIn();
-      if (res?.user) {
-        setUser(res.user);
-        setNeedsAuth(false);
-      }
-    } catch (err: any) {
-      console.error("Sign-in failed", err);
-      setError("Sign-in failed. You can still upload files locally or paste image URLs.");
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
+  // Google sign-in used to be required here so uploads could reach the admin's
+  // Google Drive. Supabase Storage needs no sign-in, so that whole flow — the
+  // auth listener, the login handler, and the "connect your account" panel —
+  // is gone.
 
   const [title, setTitle] = useState(currentConfig.title || "Brand Concept Review");
   const [brief, setBrief] = useState(
@@ -91,7 +52,13 @@ export const SetupModal: React.FC<SetupModalProps> = ({
   );
   
   const [maxSubmits, setMaxSubmits] = useState<number>(currentConfig.maxSubmits || 1);
-  const [pin, setPin] = useState<string>(currentConfig.pin || "1234");
+
+  // The admin PIN can no longer be read by the browser — that is fix #1
+  // working as intended. So this field is no longer "here is your current
+  // passcode", it is "type a new one to change it". Blank means keep the
+  // existing passcode. During first-time setup there is nothing to keep, so
+  // it is pre-filled with a default the admin can overwrite.
+  const [pin, setPin] = useState<string>(isInitialSetup ? "1234" : "");
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [assetInputs, setAssetInputs] = useState<Record<number, string>>({});
@@ -108,7 +75,7 @@ export const SetupModal: React.FC<SetupModalProps> = ({
         setWorks(currentConfig.works.map((w) => ({ ...w })));
       }
       setMaxSubmits(currentConfig.maxSubmits || 1);
-      setPin(currentConfig.pin || "1234");
+      setPin(isInitialSetup ? "1234" : "");
       setError(null);
       setAssetInputs({});
     }
@@ -220,25 +187,11 @@ export const SetupModal: React.FC<SetupModalProps> = ({
     setUploadingIdx(index);
     setError(null);
     try {
-      let url = "";
-
-      // If signed into Google Drive, upload directly to Drive
-      if (!needsAuth) {
-        try {
-          const token = await getAccessToken();
-          if (token) {
-            url = await uploadToDrive(file, token);
-          }
-        } catch (driveErr) {
-          console.warn("Drive upload failed, falling back to local server upload", driveErr);
-        }
-      }
-
-      // If Drive wasn't used or fell back, use direct local upload
-      if (!url) {
-        const res = await uploadImage(file);
-        url = res.url;
-      }
+      // Single upload path: compress client-side, then straight to Supabase
+      // Storage. The old "try Drive, fall back to the local server" branch is
+      // gone — both of those destinations were the problem this migration set
+      // out to fix.
+      const { url } = await uploadImage(file);
 
       // Automatically append to the concept's assets array
       const finalUrl = formatImageUrl(url);
@@ -273,8 +226,15 @@ export const SetupModal: React.FC<SetupModalProps> = ({
       return;
     }
 
-    if (!pin.trim()) {
+    // A passcode is only mandatory the first time. Afterwards, blank means
+    // "keep the existing one", since the browser cannot read it to pre-fill.
+    if (isInitialSetup && !pin.trim()) {
       setError("Please set an admin passcode so you can manage voting later.");
+      return;
+    }
+
+    if (!isInitialSetup && !adminPin) {
+      setError("Unlock admin access before saving changes.");
       return;
     }
 
@@ -293,8 +253,13 @@ export const SetupModal: React.FC<SetupModalProps> = ({
           };
         }),
         maxSubmits,
-        pin: pin.trim(),
-        currentPin: adminPin || currentConfig.pin || pin.trim()
+        // Send `pin` only when the admin actually typed a new one.
+        // Undefined means "leave the existing passcode alone".
+        pin: pin.trim() || undefined,
+        // `currentPin` authorises the write. After unlocking it is `adminPin`;
+        // during first-time setup the passcode being set is also the one that
+        // authorises, since the row still holds its default.
+        currentPin: adminPin || pin.trim()
       });
       onClose();
     } catch (err: any) {
@@ -617,45 +582,40 @@ export const SetupModal: React.FC<SetupModalProps> = ({
             <div>
               <label className="block text-[11px] font-bold text-neutral-500 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
                 <Shield className="w-3.5 h-3.5" />
-                Admin Passcode
+                {isInitialSetup ? "Admin Passcode" : "Change Admin Passcode"}
               </label>
               <input
                 type="password"
-                required
+                required={isInitialSetup}
                 value={pin}
                 onChange={(e) => setPin(e.target.value)}
-                placeholder="Required to close/edit/clear"
+                placeholder={
+                  isInitialSetup
+                    ? "Required to close/edit/clear"
+                    : "Leave blank to keep current"
+                }
                 className="w-full px-3.5 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800/50 text-neutral-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-[#007AFF]"
               />
+              {!isInitialSetup && (
+                <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1.5">
+                  Your existing passcode is never shown here — it stays in the
+                  database and is not sent to the browser.
+                </p>
+              )}
             </div>
           </div>
 
           {/* Buttons */}
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-neutral-200 dark:border-neutral-800 pt-4 mt-2">
-            <div className="flex gap-4 items-center w-full sm:w-auto">
-              {needsAuth ? (
-                <button
-                  type="button"
-                  onClick={handleLogin}
-                  disabled={isLoggingIn}
-                  className="gsi-material-button bg-white text-gray-600 border border-gray-300 rounded-lg shadow-2xs py-1.5 px-3 flex items-center gap-2 hover:bg-gray-50 focus:outline-none transition disabled:opacity-50 text-xs font-medium"
-                >
-                  <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" className="w-4 h-4">
-                    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
-                    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
-                    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
-                    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
-                    <path fill="none" d="M0 0h48v48H0z"></path>
-                  </svg>
-                  <span>Connect Google Drive</span>
-                </button>
-              ) : (
-                <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-500 font-medium">
-                  <Shield className="w-4 h-4" />
-                  Drive Connected ({user?.email || "Signed In"})
-                </div>
-              )}
+            {/* The "Connect Google Drive" button lived here. Uploads now go
+                straight to Supabase Storage, so there is nothing to connect. */}
+            <div className="flex gap-4 items-center">
+              <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400 font-medium">
+                <Shield className="w-4 h-4" />
+                Assets are stored securely and persist across deploys
+              </div>
             </div>
+
             
             <div className="flex items-center justify-end gap-3 w-full sm:w-auto">
               {!isInitialSetup && (
