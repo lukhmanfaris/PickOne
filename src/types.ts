@@ -21,6 +21,7 @@ export interface ReviewConfig {
   works: Work[];
   maxSubmits: number;  // e.g. 1, 2, 3 times
   open: boolean;       // Voting status
+  sizingOpen: boolean; // Jersey sizing form status
   createdAt: number;
   updatedAt: number;
   // NOTE: `pin` deliberately absent.

@@ -25,6 +25,10 @@ import { ArtworkLightbox } from "./components/ArtworkLightbox";
 import { SetupModal } from "./components/SetupModal";
 import { NameGateModal } from "./components/NameGateModal";
 import { AdminPromptModal } from "./components/AdminPromptModal";
+import { SizingForm } from "./components/SizingForm";
+import { JerseyAdminPanel } from "./components/JerseyAdminPanel";
+import { adminToggleSizing } from "./api";
+import { Shirt, Trophy } from "lucide-react";
 import { AlertCircle, CheckCircle2, Eye } from "lucide-react";
 
 export default function App() {
@@ -32,6 +36,13 @@ export default function App() {
   const [ballots, setBallots] = useState<Ballot[]>([]);
   const [voter, setVoter] = useState<Voter | null>(null);
   const [draftVotes, setDraftVotes] = useState<Record<string, string>>({});
+
+  // Sizing is the default view now that voting has closed.
+  // Results stay reachable behind the second tab.
+  const [view, setView] = useState<"sizing" | "results">(
+    window.location.hash === "#results" ? "results" : "sizing"
+  );
+  const [isJerseyAdminOpen, setIsJerseyAdminOpen] = useState(false);
   /** True when this person entered a name that had already voted. */
   const [draftInitialized, setDraftInitialized] = useState(false);
 
@@ -154,6 +165,17 @@ export default function App() {
   }, [cfg, myBallot]);
 
   const hasSubmittedBefore = (myBallot?.count ?? 0) > 0;
+
+  const handleToggleSizing = async () => {
+    if (!adminPin) return;
+    try {
+      const open = await adminToggleSizing(adminPin);
+      showToast("ok", open ? "Sizing form is now open." : "Sizing form is now closed.");
+      await loadState(true);
+    } catch (e: any) {
+      showToast("err", e.message || "Could not change the sizing form status.");
+    }
+  };
 
   const handleEnterVoter = (voterId: string) => {
     // Identity is the voter's assigned ID, not a per-device random value.
@@ -444,6 +466,57 @@ export default function App() {
       />
 
       <main className="max-w-[1240px] mx-auto px-4 sm:px-6 pb-20">
+        {/* Sizing first, results behind a tab. */}
+        <div className="flex items-center justify-center gap-1.5 mb-6 p-1 rounded-full bg-neutral-100 w-fit mx-auto">
+          {([
+            ["sizing", "Jersey sizing", Shirt],
+            ["results", "Voting results", Trophy],
+          ] as const).map(([key, label, Icon]) => (
+            <button
+              key={key}
+              onClick={() => {
+                setView(key);
+                window.location.hash = key === "results" ? "#results" : "#sizing";
+              }}
+              className={`px-4 sm:px-5 py-2 rounded-full text-xs sm:text-sm font-semibold flex items-center gap-1.5 transition ${
+                view === key
+                  ? "bg-white text-neutral-900 shadow-sm"
+                  : "text-neutral-500 hover:text-neutral-700"
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {isAdmin && view === "sizing" && (
+          <div className="mb-5 flex flex-wrap items-center justify-center gap-2">
+            <button
+              onClick={handleToggleSizing}
+              className="px-4 py-2 rounded-full text-xs font-semibold bg-neutral-900 text-white hover:bg-neutral-700 transition"
+            >
+              {cfg.sizingOpen ? "Close sizing form" : "Reopen sizing form"}
+            </button>
+            <button
+              onClick={() => setIsJerseyAdminOpen(true)}
+              className="px-4 py-2 rounded-full text-xs font-semibold bg-white border border-neutral-300 text-neutral-700 hover:border-neutral-400 transition"
+            >
+              View orders &amp; export
+            </button>
+          </div>
+        )}
+
+        {view === "sizing" && voter && (
+          <SizingForm
+            voterId={voter.id}
+            sizingOpen={cfg.sizingOpen}
+            onToast={showToast}
+          />
+        )}
+
+        {view === "results" && (
+        <>
         {isAdmin && (
           <AdminBar
             cfg={cfg}
@@ -490,21 +563,46 @@ export default function App() {
 
         {/* Centered Main Gallery: 3 Concept Cards Per Row */}
         <section aria-label="Design Routes" className="w-full">
-          <DesignHang
-            categories={cfg.categories}
-            works={cfg.works}
-            draftVotes={draftVotes}
-            tallies={tallies}
-            isOpen={isOpen}
-            isLocked={isLocked}
-            totalBallots={ballots.length}
-            isAdmin={isAdmin}
-            onToggleVote={handleToggleVote}
-            onOpenZoom={(index) => setLightboxIndex(index)}
-            onAddAssetToWork={handleAddAssetToWork}
-            onAddOptionToCategory={() => setIsSetupOpen(true)}
-          />
+          {cfg.categories.length === 0 ? (
+            <div className="py-20 px-6 text-center">
+              <div className="max-w-md mx-auto">
+                <h2 className="text-lg font-semibold text-neutral-900 dark:text-white">
+                  Nothing to review yet
+                </h2>
+                <p className="text-sm text-neutral-500 dark:text-neutral-400 mt-2 leading-relaxed">
+                  {isAdmin
+                    ? "Open Configure to add your categories and upload the concepts you want people to vote on."
+                    : "The organiser hasn't added the concepts yet. Check back shortly — this page updates on its own."}
+                </p>
+                {isAdmin && (
+                  <button
+                    onClick={() => setIsSetupOpen(true)}
+                    className="mt-5 px-5 py-2.5 rounded-full bg-[#007AFF] text-white text-sm font-semibold hover:bg-[#005bb5] transition shadow-md shadow-blue-500/20"
+                  >
+                    Configure review
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <DesignHang
+              categories={cfg.categories}
+              works={cfg.works}
+              draftVotes={draftVotes}
+              tallies={tallies}
+              isOpen={isOpen}
+              isLocked={isLocked}
+              totalBallots={ballots.length}
+              isAdmin={isAdmin}
+              onToggleVote={handleToggleVote}
+              onOpenZoom={(index) => setLightboxIndex(index)}
+              onAddAssetToWork={handleAddAssetToWork}
+              onAddOptionToCategory={() => setIsSetupOpen(true)}
+            />
+          )}
         </section>
+        </>
+        )}
       </main>
 
       {/* Fix #3, part 2: the explicit submit step.
@@ -549,8 +647,14 @@ export default function App() {
       <NameGateModal
         cfg={cfg}
         isOpen={!voter}
-        takenIds={ballots.map((b) => b.voterId)}
         onEnter={handleEnterVoter}
+      />
+
+      <JerseyAdminPanel
+        isOpen={isJerseyAdminOpen}
+        adminPin={adminPin}
+        onClose={() => setIsJerseyAdminOpen(false)}
+        onToast={showToast}
       />
 
       <AdminPromptModal

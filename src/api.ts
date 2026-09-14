@@ -147,7 +147,7 @@ export async function fetchReviewState(): Promise<{ cfg: ReviewConfig; ballots: 
   const [reviewRes, catRes, workRes, ballotRes] = await Promise.all([
     supabase
       .from("reviews_public")
-      .select("id, title, brief, max_submits, is_open, created_at, updated_at")
+      .select("id, title, brief, max_submits, is_open, sizing_open, created_at, updated_at")
       .eq("id", REVIEW_ID)
       .single(),
     supabase
@@ -189,6 +189,7 @@ export async function fetchReviewState(): Promise<{ cfg: ReviewConfig; ballots: 
     works,
     maxSubmits: r.max_submits,
     open: r.is_open,
+    sizingOpen: r.sizing_open !== false,
     createdAt: new Date(r.created_at).getTime(),
     updatedAt: new Date(r.updated_at).getTime(),
   };
@@ -392,4 +393,97 @@ export async function resetToSampleReview(
 
   const state = await fetchReviewState();
   return { success: true, ...state };
+}
+
+/* ------------------------------------------------------------------ */
+/* Jersey sizing                                                       */
+/* ------------------------------------------------------------------ */
+
+import type { JerseyEntry, JerseyAdminRow } from "./utils/jersey";
+
+/** Numbers already claimed. This is all a voter is allowed to see. */
+export async function fetchTakenNumbers(): Promise<number[]> {
+  const { data, error } = await supabase
+    .from("jersey_numbers_public")
+    .select("jersey_number")
+    .eq("review_id", REVIEW_ID);
+
+  if (error) throw toFriendlyError(error, "Could not load claimed numbers.");
+  return (data || []).map((r: any) => r.jersey_number as number);
+}
+
+/** This voter's own entry, or null if they haven't submitted. */
+export async function getMyJerseyEntry(voterId: string): Promise<JerseyEntry | null> {
+  const { data, error } = await supabase.rpc("get_my_jersey_entry", {
+    p_review_id: REVIEW_ID,
+    p_voter_id: voterId,
+  });
+
+  if (error) throw toFriendlyError(error, "Could not load your jersey details.");
+  if (!data) return null;
+
+  const d = data as any;
+  return {
+    fullName: d.full_name,
+    company: d.company,
+    size: d.size,
+    jerseyNumber: d.jersey_number,
+    jerseyName: d.jersey_name,
+    createdAt: d.created_at,
+  };
+}
+
+export async function claimJersey(
+  voterId: string,
+  entry: { fullName: string; company: string; size: string; jerseyNumber: number; jerseyName: string }
+): Promise<{ jerseyNumber: number; jerseyName: string }> {
+  const { data, error } = await supabase.rpc("claim_jersey", {
+    p_review_id: REVIEW_ID,
+    p_voter_id: voterId,
+    p_full_name: entry.fullName,
+    p_company: entry.company,
+    p_size: entry.size,
+    p_jersey_number: entry.jerseyNumber,
+    p_jersey_name: entry.jerseyName,
+  });
+
+  if (error) throw toFriendlyError(error, "Could not submit your jersey details.");
+  const d = data as any;
+  return { jerseyNumber: d.jersey_number, jerseyName: d.jersey_name };
+}
+
+export async function adminListJerseyEntries(pin: string): Promise<JerseyAdminRow[]> {
+  const { data, error } = await supabase.rpc("admin_list_jersey_entries", {
+    p_review_id: REVIEW_ID,
+    p_pin: pin,
+  });
+
+  if (error) throw toFriendlyError(error, "Could not load the jersey list.");
+  return ((data || []) as any[]).map((r) => ({
+    jerseyNumber: r.jersey_number,
+    jerseyName: r.jersey_name,
+    fullName: r.full_name,
+    company: r.company,
+    size: r.size,
+    voterId: r.voter_id,
+    createdAt: r.created_at,
+  }));
+}
+
+export async function adminToggleSizing(pin: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc("admin_toggle_sizing", {
+    p_review_id: REVIEW_ID,
+    p_pin: pin,
+  });
+  if (error) throw toFriendlyError(error, "Could not change the sizing form status.");
+  return data as boolean;
+}
+
+export async function adminReleaseJersey(pin: string, voterId: string): Promise<void> {
+  const { error } = await supabase.rpc("admin_release_jersey", {
+    p_review_id: REVIEW_ID,
+    p_pin: pin,
+    p_voter_id: voterId,
+  });
+  if (error) throw toFriendlyError(error, "Could not release that entry.");
 }
