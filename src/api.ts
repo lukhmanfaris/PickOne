@@ -147,7 +147,7 @@ export async function fetchReviewState(): Promise<{ cfg: ReviewConfig; ballots: 
   const [reviewRes, catRes, workRes, ballotRes] = await Promise.all([
     supabase
       .from("reviews_public")
-      .select("id, title, brief, max_submits, is_open, sizing_open, created_at, updated_at")
+      .select("id, title, brief, max_submits, is_open, sizing_open, size_chart_url, created_at, updated_at")
       .eq("id", REVIEW_ID)
       .single(),
     supabase
@@ -190,6 +190,7 @@ export async function fetchReviewState(): Promise<{ cfg: ReviewConfig; ballots: 
     maxSubmits: r.max_submits,
     open: r.is_open,
     sizingOpen: r.sizing_open !== false,
+    sizeChartUrl: r.size_chart_url || undefined,
     createdAt: new Date(r.created_at).getTime(),
     updatedAt: new Date(r.updated_at).getTime(),
   };
@@ -486,4 +487,13 @@ export async function adminReleaseJersey(pin: string, voterId: string): Promise<
     p_voter_id: voterId,
   });
   if (error) throw toFriendlyError(error, "Could not release that entry.");
+}
+
+export async function adminSetSizeChart(pin: string, url: string | null): Promise<void> {
+  const { error } = await supabase.rpc("admin_set_size_chart", {
+    p_review_id: REVIEW_ID,
+    p_pin: pin,
+    p_url: url,
+  });
+  if (error) throw toFriendlyError(error, "Could not save the size guide.");
 }

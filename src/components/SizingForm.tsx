@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { CheckCircle2, Lock, Shirt, Loader2 } from "lucide-react";
+import { CheckCircle2, Lock, Shirt, Loader2, Ruler, X } from "lucide-react";
 import {
   COMPANIES, SIZES, JERSEY_NUMBERS, JERSEY_NAME_MAX, padNumber,
   type JerseyEntry,
@@ -10,10 +10,11 @@ import { supabase } from "../utils/supabase";
 interface SizingFormProps {
   voterId: string;
   sizingOpen: boolean;
+  sizeChartUrl?: string;
   onToast: (type: "ok" | "err", text: string) => void;
 }
 
-export const SizingForm: React.FC<SizingFormProps> = ({ voterId, sizingOpen, onToast }) => {
+export const SizingForm: React.FC<SizingFormProps> = ({ voterId, sizingOpen, sizeChartUrl, onToast }) => {
   const [taken, setTaken] = useState<number[]>([]);
   const [entry, setEntry] = useState<JerseyEntry | null>(null);
   const [loading, setLoading] = useState(true);
@@ -25,6 +26,7 @@ export const SizingForm: React.FC<SizingFormProps> = ({ voterId, sizingOpen, onT
   const [number, setNumber] = useState<number | null>(null);
   const [jerseyName, setJerseyName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [chartOpen, setChartOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -198,9 +200,21 @@ export const SizingForm: React.FC<SizingFormProps> = ({ voterId, sizingOpen, onT
       </div>
 
       <div>
-        <label className="block text-xs font-bold text-neutral-700 uppercase tracking-wider mb-1.5">
-          Size
-        </label>
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="block text-xs font-bold text-neutral-700 uppercase tracking-wider">
+            Size
+          </label>
+          {sizeChartUrl && (
+            <button
+              type="button"
+              onClick={() => setChartOpen(true)}
+              className="text-xs font-semibold text-[#007AFF] hover:underline flex items-center gap-1"
+            >
+              <Ruler className="w-3.5 h-3.5" />
+              Size guide
+            </button>
+          )}
+        </div>
         <div className="grid grid-cols-4 gap-2">
           {SIZES.map((s) => (
             <button
@@ -257,6 +271,28 @@ export const SizingForm: React.FC<SizingFormProps> = ({ voterId, sizingOpen, onT
           {jerseyName.length}/{JERSEY_NAME_MAX} characters. This is printed on the back.
         </p>
       </div>
+
+      {chartOpen && sizeChartUrl && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setChartOpen(false)}
+        >
+          <button
+            type="button"
+            onClick={() => setChartOpen(false)}
+            className="absolute top-4 right-4 p-2 rounded-full bg-white/10 text-white hover:bg-white/20 transition"
+            aria-label="Close size guide"
+          >
+            <X className="w-5 h-5" />
+          </button>
+          <img
+            src={sizeChartUrl}
+            alt="Jersey measurement chart"
+            onClick={(e) => e.stopPropagation()}
+            className="max-w-full max-h-[85vh] object-contain rounded-xl bg-white"
+          />
+        </div>
+      )}
 
       <button
         type="submit" disabled={saving}

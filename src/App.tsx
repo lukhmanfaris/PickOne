@@ -27,7 +27,7 @@ import { NameGateModal } from "./components/NameGateModal";
 import { AdminPromptModal } from "./components/AdminPromptModal";
 import { SizingForm } from "./components/SizingForm";
 import { JerseyAdminPanel } from "./components/JerseyAdminPanel";
-import { adminToggleSizing } from "./api";
+import { adminToggleSizing, adminSetSizeChart } from "./api";
 import { Shirt, Trophy } from "lucide-react";
 import { AlertCircle, CheckCircle2, Eye } from "lucide-react";
 
@@ -165,6 +165,30 @@ export default function App() {
   }, [cfg, myBallot]);
 
   const hasSubmittedBefore = (myBallot?.count ?? 0) > 0;
+
+  const handleUploadSizeChart = async (file: File) => {
+    if (!adminPin) return;
+    showToast("ok", "Uploading size guide…");
+    try {
+      const { url } = await uploadImage(file);
+      await adminSetSizeChart(adminPin, url);
+      await loadState(true);
+      showToast("ok", "Size guide updated.");
+    } catch (e: any) {
+      showToast("err", e.message || "Could not upload the size guide.");
+    }
+  };
+
+  const handleRemoveSizeChart = async () => {
+    if (!adminPin) return;
+    try {
+      await adminSetSizeChart(adminPin, null);
+      await loadState(true);
+      showToast("ok", "Size guide removed.");
+    } catch (e: any) {
+      showToast("err", e.message || "Could not remove the size guide.");
+    }
+  };
 
   const handleToggleSizing = async () => {
     if (!adminPin) return;
@@ -504,6 +528,29 @@ export default function App() {
             >
               View orders &amp; export
             </button>
+
+            <label className="px-4 py-2 rounded-full text-xs font-semibold bg-white border border-neutral-300 text-neutral-700 hover:border-neutral-400 transition cursor-pointer">
+              {cfg.sizeChartUrl ? "Replace size guide" : "Upload size guide"}
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleUploadSizeChart(f);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+
+            {cfg.sizeChartUrl && (
+              <button
+                onClick={handleRemoveSizeChart}
+                className="px-4 py-2 rounded-full text-xs font-semibold text-rose-600 hover:bg-rose-50 transition"
+              >
+                Remove guide
+              </button>
+            )}
           </div>
         )}
 
@@ -511,6 +558,7 @@ export default function App() {
           <SizingForm
             voterId={voter.id}
             sizingOpen={cfg.sizingOpen}
+            sizeChartUrl={cfg.sizeChartUrl}
             onToast={showToast}
           />
         )}

@@ -22,6 +22,7 @@ export interface ReviewConfig {
   maxSubmits: number;  // e.g. 1, 2, 3 times
   open: boolean;       // Voting status
   sizingOpen: boolean; // Jersey sizing form status
+  sizeChartUrl?: string; // Measurement chart shown in the sizing form
   createdAt: number;
   updatedAt: number;
   // NOTE: `pin` deliberately absent.
